@@ -301,11 +301,17 @@
         <div class="pt-1 pb-3 border-b border-slate-100 dark:border-slate-800">
           
           <!-- CUSTOMER MODE: CHỈ HIỆN GIÁ BÁN NIÊM YẾT SANG TRỌNG -->
-          <div id="price-view-customer">
-            <span class="text-xs uppercase tracking-wider text-slate-400 font-bold block mb-1">Giá Niêm Yết</span>
-            <div id="prod-customer-price" class="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">
-              2.600.000 ₫
+          <div id="price-view-customer" class="flex items-center justify-between">
+            <div>
+              <span class="text-xs uppercase tracking-wider text-slate-400 font-bold block mb-1">Giá Niêm Yết</span>
+              <div id="prod-customer-price" class="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white transition-all">
+                2.100.000 ₫
+              </div>
             </div>
+            <button onclick="openEditPriceCurrent()" class="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-xs flex items-center gap-1.5 border border-slate-200 dark:border-slate-700 active:scale-95 transition shadow-xs" title="Chỉnh sửa giá sản phẩm này">
+              <i class="fa-solid fa-pen-to-square text-amber-500"></i>
+              <span>Sửa Giá</span>
+            </button>
           </div>
 
           <!-- DEV MODE: HIỆN ĐẦY ĐỦ GIÁ BÁN, GIÁ VỐN, LÃI TRÊN ĐÔI, VỐN LÔ & NÚT SỬA GIÁ -->
@@ -557,13 +563,11 @@
               <span class="text-[11px] text-slate-400">Giá mua vào</span>
             </div>
             <input 
-              type="number" 
+              type="text" 
               id="edit-cost-input" 
-              min="0" 
-              step="10000" 
               inputmode="numeric"
-              pattern="[0-9]*"
-              oninput="recalcEditPricePreview()" 
+              oninput="handleEditPriceInput(this)" 
+              placeholder="1.600.000"
               required 
               class="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-base font-extrabold text-slate-900 dark:text-white focus:ring-2 focus:ring-amber-500"
             >
@@ -575,13 +579,11 @@
               <span class="text-[11px] text-blue-500 font-bold">Giá bán ra khách</span>
             </div>
             <input 
-              type="number" 
+              type="text" 
               id="edit-sell-input" 
-              min="0" 
-              step="10000" 
               inputmode="numeric"
-              pattern="[0-9]*"
-              oninput="recalcEditPricePreview()" 
+              oninput="handleEditPriceInput(this)" 
+              placeholder="2.100.000"
               required 
               class="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-base font-extrabold text-blue-600 dark:text-blue-400 focus:ring-2 focus:ring-blue-500"
             >
@@ -946,7 +948,7 @@
         colorway: "White / Triple White",
         boxType: "Hộp Xám Tiêu Chuẩn & Nắp Đậy",
         costPrice: 1600000,
-        sellPrice: 1900000,
+        sellPrice: 2100000,
         longDesc: "Dòng giày huyền thoại thiết lập tiêu chuẩn phong cách từ năm 1982. Với đệm khí Nike Air êm ái trọn vẹn và lớp da cao cấp chống nhăn, đây là biểu tượng bất biến của văn hóa Sneaker toàn cầu.",
         bullets: [
           "Chất liệu da thật cao cấp kết hợp đệm khí Air êm ái toàn bàn chân.",
@@ -1419,6 +1421,22 @@
     }
 
     // ==================== ACTIONS & MODALS ====================
+    function parseNumericValue(val) {
+      if (typeof val === 'number') return Math.round(val);
+      const clean = String(val || '').replace(/[^0-9]/g, '');
+      return clean ? parseInt(clean, 10) : 0;
+    }
+
+    function handleEditPriceInput(el) {
+      const raw = String(el.value).replace(/[^0-9]/g, '');
+      if (raw) {
+        el.value = new Intl.NumberFormat('vi-VN').format(Number(raw));
+      } else {
+        el.value = '';
+      }
+      recalcEditPricePreview();
+    }
+
     function openEditPriceCurrent() {
       const p = masterProducts.find(item => item.id === currentProductId);
       if (!p) return;
@@ -1428,16 +1446,18 @@
       document.getElementById('edit-price-prod-sku').innerText = `Mã: ${p.sku}`;
       document.getElementById('edit-price-prod-img').src = p.images[0].src;
 
-      document.getElementById('edit-cost-input').value = p.costPrice || 0;
-      document.getElementById('edit-sell-input').value = p.sellPrice || 0;
+      const costVal = p.costPrice || 0;
+      const sellVal = p.sellPrice || 0;
+      document.getElementById('edit-cost-input').value = costVal ? new Intl.NumberFormat('vi-VN').format(costVal) : '';
+      document.getElementById('edit-sell-input').value = sellVal ? new Intl.NumberFormat('vi-VN').format(sellVal) : '';
 
       recalcEditPricePreview();
       openModal('modal-edit-price');
     }
 
     function recalcEditPricePreview() {
-      const cost = parseFloat(document.getElementById('edit-cost-input').value) || 0;
-      const sell = parseFloat(document.getElementById('edit-sell-input').value) || 0;
+      const cost = parseNumericValue(document.getElementById('edit-cost-input').value);
+      const sell = parseNumericValue(document.getElementById('edit-sell-input').value);
       const profitPerUnit = sell - cost;
       const margin = cost > 0 ? ((profitPerUnit / cost) * 100).toFixed(1) : 0;
 
@@ -1446,23 +1466,28 @@
       const totalPotential = totalStock * profitPerUnit;
 
       const profitEl = document.getElementById('edit-preview-profit-per-unit');
-      profitEl.innerText = `${profitPerUnit >= 0 ? '+' : ''}${formatVND(profitPerUnit)}`;
-      profitEl.className = `text-sm font-extrabold ${profitPerUnit >= 0 ? 'text-emerald-600' : 'text-red-500'}`;
+      if (profitEl) {
+        profitEl.innerText = `${profitPerUnit >= 0 ? '+' : ''}${formatVND(profitPerUnit)}`;
+        profitEl.className = `text-sm font-extrabold ${profitPerUnit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`;
+      }
 
-      document.getElementById('edit-preview-margin').innerText = `${margin}% so với giá vốn`;
-      document.getElementById('edit-preview-total-potential').innerText = `${totalPotential >= 0 ? '+' : ''}${formatVND(totalPotential)}`;
+      const marginEl = document.getElementById('edit-preview-margin');
+      if (marginEl) marginEl.innerText = `${margin}% so với giá vốn`;
+
+      const potentialEl = document.getElementById('edit-preview-total-potential');
+      if (potentialEl) potentialEl.innerText = `${totalPotential >= 0 ? '+' : ''}${formatVND(totalPotential)}`;
     }
 
     function handleConfirmEditPrice(e) {
-      e.preventDefault();
+      if (e) e.preventDefault();
       const p = masterProducts.find(item => item.id === currentProductId);
       if (!p) return;
 
-      const newCost = parseFloat(document.getElementById('edit-cost-input').value) || 0;
-      const newSell = parseFloat(document.getElementById('edit-sell-input').value) || 0;
+      const newCost = parseNumericValue(document.getElementById('edit-cost-input').value);
+      const newSell = parseNumericValue(document.getElementById('edit-sell-input').value);
 
-      if (newCost < 0 || newSell < 0) {
-        alert('Giá không hợp lệ!');
+      if (newSell <= 0) {
+        alert('Vui lòng nhập giá bán hợp lệ!');
         return;
       }
 
@@ -1470,6 +1495,7 @@
       p.sellPrice = newSell;
 
       saveAppState();
+      executeCloudBroadcast(true); // Gửi trực tiếp lên đám mây tức thì
       closeModal('modal-edit-price');
       showToast(`Đã đổi giá: Vốn ${formatVND(newCost)} • Bán ${formatVND(newSell)}`, 'success');
     }
