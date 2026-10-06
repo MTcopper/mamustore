@@ -1,0 +1,6 @@
+cloudflared.exe
+*.py
+*.bat
+__pycache__/
+images/
+LINK_WEBSITE.txt
