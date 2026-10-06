@@ -7,6 +7,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Mamu Store">
   <meta name="theme-color" content="#ffffff">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>MAMU STORE - Sneaker & Gear Showroom</title>
 
   <!-- Tailwind CSS CDN -->
@@ -208,7 +211,7 @@
         </div>
 
         <!-- Realtime Cloud Indicator -->
-        <div id="header-cloud-indicator" title="Đồng bộ đám mây thời gian thực giữa iPhone và Máy tính" class="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-1.5 rounded-xl border border-emerald-500/20">
+        <div id="header-cloud-indicator" onclick="openSyncModal()" title="Nhấn để xem trạng thái đồng bộ đám mây" class="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-1.5 rounded-xl border border-emerald-500/20 cursor-pointer active:scale-95 transition">
           <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
           <span class="hidden sm:inline">Cloud Sync</span>
         </div>
@@ -942,8 +945,8 @@
         category: "Sneakers",
         colorway: "White / Triple White",
         boxType: "Hộp Xám Tiêu Chuẩn & Nắp Đậy",
-        costPrice: 1950000,
-        sellPrice: 2600000,
+        costPrice: 1600000,
+        sellPrice: 1900000,
         longDesc: "Dòng giày huyền thoại thiết lập tiêu chuẩn phong cách từ năm 1982. Với đệm khí Nike Air êm ái trọn vẹn và lớp da cao cấp chống nhăn, đây là biểu tượng bất biến của văn hóa Sneaker toàn cầu.",
         bullets: [
           "Chất liệu da thật cao cấp kết hợp đệm khí Air êm ái toàn bàn chân.",
@@ -1857,6 +1860,10 @@
     });
 
     // ==================== REALTIME CLOUD SYNC ENGINE ====================
+    const CLOUD_SYNC_SERVERS = [
+      'https://ntfy.envs.net',
+      'https://ntfy.tedomum.fr'
+    ];
     const CLOUD_SYNC_CHANNEL = 'mamustore_sync_mtcopper_7799';
     let myDeviceId = localStorage.getItem('mamu_device_id');
     if (!myDeviceId) {
@@ -1867,22 +1874,27 @@
     let lastProcessedMsgId = localStorage.getItem('mamu_last_processed_msg_id') || '';
     let sseConnection = null;
     let isSyncing = false;
+    let sseServerIndex = 0;
 
     function initRealtimeCloud() {
       // 1. Fetch latest state from cloud immediately
       fetchLatestCloudData(false);
+
       // 2. Open persistent Server-Sent Events listener for instant real-time push
       startCloudEventListener();
-      // 3. Heartbeat polling every 3.5 seconds as mobile fallback
+
+      // 3. Relaxed heartbeat every 45s (safe from rate limits)
       setInterval(() => {
         fetchLatestCloudData(false);
-      }, 3500);
+      }, 45000);
 
       // 4. Auto sync when tab is focused or phone is unlocked
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
           fetchLatestCloudData(false);
-          startCloudEventListener();
+          if (!sseConnection || sseConnection.readyState === EventSource.CLOSED) {
+            startCloudEventListener();
+          }
         }
       });
       window.addEventListener('focus', () => {
@@ -1897,12 +1909,15 @@
 
       broadcastDebounceTimer = setTimeout(() => {
         executeCloudBroadcast(manual);
-      }, manual ? 0 : 200);
+      }, manual ? 0 : 300);
     }
 
     function executeCloudBroadcast(manual = false) {
       if (isSyncing && !manual) return;
       isSyncing = true;
+
+      // Safety unlock timeout
+      const unlockTimer = setTimeout(() => { isSyncing = false; }, 6000);
 
       const syncPayload = {
         msgId: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -1921,23 +1936,26 @@
       localStorage.setItem('mamu_last_processed_msg_id', lastProcessedMsgId);
       updateCloudStatusUI('syncing');
 
-      fetch('https://ntfy.sh/' + CLOUD_SYNC_CHANNEL, {
-        method: 'POST',
-        body: JSON.stringify(syncPayload),
-        headers: { 'Content-Type': 'application/json' }
-      })
-      .then(res => {
+      // Publish to redundant servers concurrently
+      const pubPromises = CLOUD_SYNC_SERVERS.map(srv => {
+        return fetch(`${srv}/${CLOUD_SYNC_CHANNEL}`, {
+          method: 'POST',
+          body: JSON.stringify(syncPayload),
+          headers: { 'Content-Type': 'application/json' }
+        }).catch(() => null);
+      });
+
+      Promise.all(pubPromises).then(results => {
+        clearTimeout(unlockTimer);
         isSyncing = false;
-        if (res.ok) {
+        const anyOk = results.some(res => res && res.ok);
+        if (anyOk) {
           updateCloudStatusUI('connected');
-          if (manual) showToast('☁️ Đã đẩy dữ liệu mới nhất lên Đám mây!', 'success');
+          if (manual) showToast('☁️ Đã đẩy dữ liệu mới nhất lên Đám mây thành công!', 'success');
         } else {
           updateCloudStatusUI('offline');
+          if (manual) showToast('Không thể kết nối đến Đám mây, vui lòng thử lại!', 'info');
         }
-      })
-      .catch(() => {
-        isSyncing = false;
-        updateCloudStatusUI('offline');
       });
     }
 
@@ -1946,8 +1964,30 @@
       if (!payload || !payload.products || !Array.isArray(payload.products)) return false;
       if (payload.senderId === myDeviceId) return false; // Ignore own echoes
       
+      // Check if incoming payload has real differences in prices or stock
+      let hasRealDiff = false;
+      payload.products.forEach(imp => {
+        const current = masterProducts.find(p => p.id === imp.id);
+        if (current) {
+          if (imp.costPrice !== undefined && Number(current.costPrice) !== Number(imp.costPrice)) hasRealDiff = true;
+          if (imp.sellPrice !== undefined && Number(current.sellPrice) !== Number(imp.sellPrice)) hasRealDiff = true;
+          if (imp.sizes && Array.isArray(imp.sizes)) {
+            imp.sizes.forEach(sImp => {
+              const sObj = current.sizes.find(s => s.eu === sImp.eu);
+              if (sObj && sImp.stock !== undefined && Number(sObj.stock) !== Number(sImp.stock)) {
+                hasRealDiff = true;
+              }
+            });
+          }
+        }
+      });
+
       const effectiveId = payload.msgId || rawMsgId;
-      if (effectiveId && effectiveId === lastProcessedMsgId && !manual) return false; // Already applied
+      // Skip ONLY if ID was already processed AND there is NO data difference
+      if (effectiveId && effectiveId === lastProcessedMsgId && !manual && !hasRealDiff) {
+        return false;
+      }
+
       if (effectiveId) {
         lastProcessedMsgId = effectiveId;
         localStorage.setItem('mamu_last_processed_msg_id', lastProcessedMsgId);
@@ -1978,7 +2018,7 @@
         }
       });
 
-      if (payload.transactions && Array.isArray(payload.transactions)) {
+      if (payload.transactions && Array.isArray(payload.transactions) && payload.transactions.length > 0) {
         transactions = payload.transactions;
         changed = true;
       }
@@ -2007,14 +2047,15 @@
       return true;
     }
 
-    // REALTIME SSE LISTENER
+    // REALTIME SSE LISTENER (WITH FALLBACK)
     function startCloudEventListener() {
       if (sseConnection) {
         try { sseConnection.close(); } catch(e) {}
       }
 
+      const srv = CLOUD_SYNC_SERVERS[sseServerIndex % CLOUD_SYNC_SERVERS.length];
       try {
-        sseConnection = new EventSource('https://ntfy.sh/' + CLOUD_SYNC_CHANNEL + '/sse');
+        sseConnection = new EventSource(`${srv}/${CLOUD_SYNC_CHANNEL}/sse`);
 
         sseConnection.onopen = () => {
           updateCloudStatusUI('connected');
@@ -2031,6 +2072,8 @@
         };
 
         sseConnection.onerror = () => {
+          sseServerIndex++;
+          try { sseConnection.close(); } catch(e) {}
           updateCloudStatusUI('offline');
         };
       } catch(err) {
@@ -2038,46 +2081,55 @@
       }
     }
 
-    // FETCH LATEST CLOUD STATE (ALWAYS PICKS THE NEWEST MESSAGE)
-    function fetchLatestCloudData(manual = false) {
+    // FETCH LATEST CLOUD STATE (WITH AUTOMATIC SERVER FALLBACK)
+    async function fetchLatestCloudData(manual = false) {
       if (manual) updateCloudStatusUI('syncing');
 
-      fetch('https://ntfy.sh/' + CLOUD_SYNC_CHANNEL + '/json?poll=1')
-        .then(res => res.text())
-        .then(text => {
-          if (!text) {
-            updateCloudStatusUI('connected');
-            if (manual) showToast('Đám mây hiện chưa có thay đổi nào mới!', 'info');
-            return;
-          }
-          const lines = text.trim().split('\n').filter(l => l.trim());
-          let applied = false;
+      let fetchedText = null;
 
-          // Process from newest line backwards
-          for (let i = lines.length - 1; i >= 0; i--) {
-            try {
-              const msg = JSON.parse(lines[i]);
-              if (msg && msg.message) {
-                const payload = JSON.parse(msg.message);
-                if (payload.products && Array.isArray(payload.products)) {
-                  if (applyCloudSyncPayload(payload, false, manual, msg.id || '')) {
-                    applied = true;
-                  }
-                  break; // Found and processed the latest valid state!
-                }
+      // Try primary server, fallback to secondary
+      for (const srv of CLOUD_SYNC_SERVERS) {
+        try {
+          const res = await fetch(`${srv}/${CLOUD_SYNC_CHANNEL}/json?poll=1`);
+          if (res.ok) {
+            const text = await res.text();
+            if (text && text.trim().length > 0) {
+              fetchedText = text;
+              break;
+            }
+          }
+        } catch(e) {}
+      }
+
+      if (!fetchedText) {
+        updateCloudStatusUI('connected');
+        if (manual) showToast('Đám mây hiện chưa có thay đổi nào mới!', 'info');
+        return;
+      }
+
+      const lines = fetchedText.trim().split('\n').filter(l => l.trim());
+      let applied = false;
+
+      // Process from newest line backwards
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const msg = JSON.parse(lines[i]);
+          if (msg && msg.message) {
+            const payload = JSON.parse(msg.message);
+            if (payload.products && Array.isArray(payload.products)) {
+              if (applyCloudSyncPayload(payload, false, manual, msg.id || '')) {
+                applied = true;
               }
-            } catch(e) {}
+              break; // Found and applied the latest valid state
+            }
           }
+        } catch(e) {}
+      }
 
-          updateCloudStatusUI('connected');
-          if (manual && !applied) {
-            showToast('Dữ liệu trên máy bạn đã khớp hoàn toàn với Đám mây!', 'success');
-          }
-        })
-        .catch(() => {
-          updateCloudStatusUI('offline');
-          if (manual) showToast('Không thể kết nối đến Đám mây, vui lòng kiểm tra mạng!', 'info');
-        });
+      updateCloudStatusUI('connected');
+      if (manual && !applied) {
+        showToast('Dữ liệu trên máy bạn đã khớp hoàn toàn với Đám mây!', 'success');
+      }
     }
 
     function updateCloudStatusUI(status) {
