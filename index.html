@@ -1864,28 +1864,48 @@
       localStorage.setItem('mamu_device_id', myDeviceId);
     }
 
-    let lastCloudTimestamp = parseInt(localStorage.getItem('mamu_last_cloud_ts') || '0');
+    let lastProcessedMsgId = localStorage.getItem('mamu_last_processed_msg_id') || '';
     let sseConnection = null;
+    let isSyncing = false;
 
     function initRealtimeCloud() {
       // 1. Fetch latest state from cloud immediately
       fetchLatestCloudData(false);
       // 2. Open persistent Server-Sent Events listener for instant real-time push
       startCloudEventListener();
+      // 3. Heartbeat polling every 3.5 seconds as mobile fallback
+      setInterval(() => {
+        fetchLatestCloudData(false);
+      }, 3500);
+
+      // 4. Auto sync when tab is focused or phone is unlocked
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          fetchLatestCloudData(false);
+          startCloudEventListener();
+        }
+      });
+      window.addEventListener('focus', () => {
+        fetchLatestCloudData(false);
+      });
     }
 
-    // BROADCAST CHANGES TO CLOUD (DEBOUNCED TO PREVENT SPAM)
+    // BROADCAST CHANGES TO CLOUD
     let broadcastDebounceTimer = null;
     function broadcastCloudSync(manual = false) {
       if (broadcastDebounceTimer) clearTimeout(broadcastDebounceTimer);
 
       broadcastDebounceTimer = setTimeout(() => {
         executeCloudBroadcast(manual);
-      }, manual ? 0 : 300);
+      }, manual ? 0 : 200);
     }
 
     function executeCloudBroadcast(manual = false) {
+      if (isSyncing && !manual) return;
+      isSyncing = true;
+
       const syncPayload = {
+        msgId: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         senderId: myDeviceId,
         timestamp: Date.now(),
         products: masterProducts.map(p => ({
@@ -1897,8 +1917,8 @@
         transactions: transactions.slice(0, 30)
       };
 
-      lastCloudTimestamp = syncPayload.timestamp;
-      localStorage.setItem('mamu_last_cloud_ts', syncPayload.timestamp.toString());
+      lastProcessedMsgId = syncPayload.msgId;
+      localStorage.setItem('mamu_last_processed_msg_id', lastProcessedMsgId);
       updateCloudStatusUI('syncing');
 
       fetch('https://ntfy.sh/' + CLOUD_SYNC_CHANNEL, {
@@ -1907,6 +1927,7 @@
         headers: { 'Content-Type': 'application/json' }
       })
       .then(res => {
+        isSyncing = false;
         if (res.ok) {
           updateCloudStatusUI('connected');
           if (manual) showToast('☁️ Đã đẩy dữ liệu mới nhất lên Đám mây!', 'success');
@@ -1915,18 +1936,22 @@
         }
       })
       .catch(() => {
+        isSyncing = false;
         updateCloudStatusUI('offline');
       });
     }
 
     // APPLY RECEIVED CLOUD PAYLOAD
-    function applyCloudSyncPayload(payload, fromRealtime = false, manual = false) {
+    function applyCloudSyncPayload(payload, fromRealtime = false, manual = false, rawMsgId = '') {
       if (!payload || !payload.products || !Array.isArray(payload.products)) return false;
       if (payload.senderId === myDeviceId) return false; // Ignore own echoes
-      if (payload.timestamp && payload.timestamp <= lastCloudTimestamp && !manual) return false;
-
-      lastCloudTimestamp = payload.timestamp || Date.now();
-      localStorage.setItem('mamu_last_cloud_ts', lastCloudTimestamp.toString());
+      
+      const effectiveId = payload.msgId || rawMsgId;
+      if (effectiveId && effectiveId === lastProcessedMsgId && !manual) return false; // Already applied
+      if (effectiveId) {
+        lastProcessedMsgId = effectiveId;
+        localStorage.setItem('mamu_last_processed_msg_id', lastProcessedMsgId);
+      }
 
       // Merge products
       let changed = false;
@@ -1965,11 +1990,18 @@
         renderCurrentProductView();
         renderHistoryTable();
 
+        // Animate price element to show live change
+        const priceEl = document.getElementById('prod-customer-price');
+        if (priceEl) {
+          priceEl.classList.add('scale-105', 'text-emerald-500');
+          setTimeout(() => priceEl.classList.remove('scale-105', 'text-emerald-500'), 800);
+        }
+
         updateCloudStatusUI('connected');
         if (fromRealtime) {
-          showToast('⚡ Đám mây: Đã tự động đồng bộ giá & tồn kho mới từ thiết bị khác!', 'success');
+          showToast('⚡ Đám mây: Đã tự động cập nhật giá & tồn kho mới!', 'success');
         } else if (manual) {
-          showToast('☁️ Đã tải và cập nhật dữ liệu mới nhất từ Đám mây!', 'success');
+          showToast('☁️ Đã đồng bộ dữ liệu mới nhất từ Đám mây!', 'success');
         }
       }
       return true;
@@ -1991,9 +2023,9 @@
         sseConnection.onmessage = (e) => {
           try {
             const msg = JSON.parse(e.data);
-            if (msg && msg.message) {
+            if (msg && msg.event === 'message' && msg.message) {
               const payload = JSON.parse(msg.message);
-              applyCloudSyncPayload(payload, true, false);
+              applyCloudSyncPayload(payload, true, false, msg.id || '');
             }
           } catch(err) {}
         };
@@ -2006,9 +2038,10 @@
       }
     }
 
-    // FETCH LATEST CLOUD STATE
+    // FETCH LATEST CLOUD STATE (ALWAYS PICKS THE NEWEST MESSAGE)
     function fetchLatestCloudData(manual = false) {
-      updateCloudStatusUI('syncing');
+      if (manual) updateCloudStatusUI('syncing');
+
       fetch('https://ntfy.sh/' + CLOUD_SYNC_CHANNEL + '/json?poll=1')
         .then(res => res.text())
         .then(text => {
@@ -2017,20 +2050,25 @@
             if (manual) showToast('Đám mây hiện chưa có thay đổi nào mới!', 'info');
             return;
           }
-          const lines = text.trim().split('\n');
+          const lines = text.trim().split('\n').filter(l => l.trim());
           let applied = false;
-          for (const line of lines) {
-            if (!line.trim()) continue;
+
+          // Process from newest line backwards
+          for (let i = lines.length - 1; i >= 0; i--) {
             try {
-              const msg = JSON.parse(line);
+              const msg = JSON.parse(lines[i]);
               if (msg && msg.message) {
                 const payload = JSON.parse(msg.message);
-                if (applyCloudSyncPayload(payload, false, manual)) {
-                  applied = true;
+                if (payload.products && Array.isArray(payload.products)) {
+                  if (applyCloudSyncPayload(payload, false, manual, msg.id || '')) {
+                    applied = true;
+                  }
+                  break; // Found and processed the latest valid state!
                 }
               }
             } catch(e) {}
           }
+
           updateCloudStatusUI('connected');
           if (manual && !applied) {
             showToast('Dữ liệu trên máy bạn đã khớp hoàn toàn với Đám mây!', 'success');
@@ -2057,7 +2095,6 @@
         if (headerIndicator) headerIndicator.className = "flex items-center gap-1.5 text-[11px] text-slate-500 font-medium bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700";
       }
     }
-
   </script>
 </body>
 </html>
