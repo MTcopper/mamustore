@@ -211,9 +211,10 @@
         </div>
 
         <!-- Realtime Cloud Indicator -->
-        <div id="header-cloud-indicator" onclick="openSyncModal()" title="Nhấn để xem trạng thái đồng bộ đám mây" class="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-1.5 rounded-xl border border-emerald-500/20 cursor-pointer active:scale-95 transition">
+        <div id="header-cloud-indicator" onclick="fetchLatestCloudData(true)" title="Chạm để kiểm tra và kéo dữ liệu mới nhất từ Đám mây" class="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-1.5 rounded-xl border border-emerald-500/20 cursor-pointer active:scale-95 transition shadow-xs">
           <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span class="hidden sm:inline">Cloud Sync</span>
+          <span>Đám Mây</span>
+          <i class="fa-solid fa-arrows-rotate text-[10px] ml-0.5 opacity-70"></i>
         </div>
 
         <!-- Dark/Light Theme -->
@@ -1909,10 +1910,12 @@
       // 2. Open persistent Server-Sent Events listener for instant real-time push
       startCloudEventListener();
 
-      // 3. Relaxed heartbeat every 45s (safe from rate limits)
+      // 3. Ultra-responsive active polling every 2.5s (bypasses carrier SSE blocks & mobile sleep)
       setInterval(() => {
-        fetchLatestCloudData(false);
-      }, 45000);
+        if (!document.hidden) {
+          fetchLatestCloudData(false);
+        }
+      }, 2500);
 
       // 4. Auto sync when tab is focused or phone is unlocked
       document.addEventListener('visibilitychange', () => {
@@ -1935,7 +1938,7 @@
 
       broadcastDebounceTimer = setTimeout(() => {
         executeCloudBroadcast(manual);
-      }, manual ? 0 : 300);
+      }, manual ? 0 : 200);
     }
 
     function executeCloudBroadcast(manual = false) {
@@ -1943,7 +1946,7 @@
       isSyncing = true;
 
       // Safety unlock timeout
-      const unlockTimer = setTimeout(() => { isSyncing = false; }, 6000);
+      const unlockTimer = setTimeout(() => { isSyncing = false; }, 4000);
 
       const syncPayload = {
         msgId: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -1979,7 +1982,7 @@
           updateCloudStatusUI('connected');
           if (manual) showToast('☁️ Đã đẩy dữ liệu mới nhất lên Đám mây thành công!', 'success');
         } else {
-          updateCloudStatusUI('offline');
+          updateCloudStatusUI('connected');
           if (manual) showToast('Không thể kết nối đến Đám mây, vui lòng thử lại!', 'info');
         }
       });
@@ -1988,7 +1991,6 @@
     // APPLY RECEIVED CLOUD PAYLOAD
     function applyCloudSyncPayload(payload, fromRealtime = false, manual = false, rawMsgId = '') {
       if (!payload || !payload.products || !Array.isArray(payload.products)) return false;
-      if (payload.senderId === myDeviceId) return false; // Ignore own echoes
       
       // Check if incoming payload has real differences in prices or stock
       let hasRealDiff = false;
@@ -2008,6 +2010,9 @@
         }
       });
 
+      // Ignore own echoes ONLY if there is no actual difference
+      if (payload.senderId === myDeviceId && !hasRealDiff) return false;
+
       const effectiveId = payload.msgId || rawMsgId;
       // Skip ONLY if ID was already processed AND there is NO data difference
       if (effectiveId && effectiveId === lastProcessedMsgId && !manual && !hasRealDiff) {
@@ -2024,19 +2029,19 @@
       payload.products.forEach(imp => {
         const current = masterProducts.find(p => p.id === imp.id);
         if (current) {
-          if (imp.costPrice !== undefined && current.costPrice !== imp.costPrice) {
-            current.costPrice = imp.costPrice;
+          if (imp.costPrice !== undefined && Number(current.costPrice) !== Number(imp.costPrice)) {
+            current.costPrice = Number(imp.costPrice);
             changed = true;
           }
-          if (imp.sellPrice !== undefined && current.sellPrice !== imp.sellPrice) {
-            current.sellPrice = imp.sellPrice;
+          if (imp.sellPrice !== undefined && Number(current.sellPrice) !== Number(imp.sellPrice)) {
+            current.sellPrice = Number(imp.sellPrice);
             changed = true;
           }
           if (imp.sizes && Array.isArray(imp.sizes)) {
             imp.sizes.forEach(sImp => {
               const sObj = current.sizes.find(s => s.eu === sImp.eu);
-              if (sObj && sImp.stock !== undefined && sObj.stock !== sImp.stock) {
-                sObj.stock = sImp.stock;
+              if (sObj && sImp.stock !== undefined && Number(sObj.stock) !== Number(sImp.stock)) {
+                sObj.stock = Number(sImp.stock);
                 changed = true;
               }
             });
@@ -2059,13 +2064,15 @@
         // Animate price element to show live change
         const priceEl = document.getElementById('prod-customer-price');
         if (priceEl) {
-          priceEl.classList.add('scale-105', 'text-emerald-500');
-          setTimeout(() => priceEl.classList.remove('scale-105', 'text-emerald-500'), 800);
+          priceEl.classList.add('scale-110', 'text-emerald-500');
+          setTimeout(() => priceEl.classList.remove('scale-110', 'text-emerald-500'), 1000);
         }
 
         updateCloudStatusUI('connected');
-        if (fromRealtime) {
-          showToast('⚡ Đám mây: Đã tự động cập nhật giá & tồn kho mới!', 'success');
+        const pCurrent = masterProducts.find(p => p.id === currentProductId);
+        const currPriceFormatted = pCurrent ? formatVND(pCurrent.sellPrice) : '';
+        if (fromRealtime || changed) {
+          showToast(`⚡ Đám mây: Tự động cập nhật giá mới: ${currPriceFormatted}`, 'success');
         } else if (manual) {
           showToast('☁️ Đã đồng bộ dữ liệu mới nhất từ Đám mây!', 'success');
         }
@@ -2073,7 +2080,8 @@
       return true;
     }
 
-    // REALTIME SSE LISTENER (WITH FALLBACK)
+    // REALTIME SSE LISTENER (AUTO-RECONNECTING)
+    let sseReconnectTimer = null;
     function startCloudEventListener() {
       if (sseConnection) {
         try { sseConnection.close(); } catch(e) {}
@@ -2090,25 +2098,39 @@
         sseConnection.onmessage = (e) => {
           try {
             const msg = JSON.parse(e.data);
-            if (msg && msg.event === 'message' && msg.message) {
-              const payload = JSON.parse(msg.message);
+            if (msg && (msg.event === 'message' || !msg.event) && msg.message) {
+              const payload = typeof msg.message === 'object' ? msg.message : JSON.parse(msg.message);
               applyCloudSyncPayload(payload, true, false, msg.id || '');
             }
           } catch(err) {}
         };
 
         sseConnection.onerror = () => {
-          sseServerIndex++;
           try { sseConnection.close(); } catch(e) {}
-          updateCloudStatusUI('offline');
+          if (!sseReconnectTimer) {
+            sseReconnectTimer = setTimeout(() => {
+              sseReconnectTimer = null;
+              sseServerIndex++;
+              startCloudEventListener();
+            }, 3000);
+          }
         };
       } catch(err) {
-        updateCloudStatusUI('offline');
+        if (!sseReconnectTimer) {
+          sseReconnectTimer = setTimeout(() => {
+            sseReconnectTimer = null;
+            sseServerIndex++;
+            startCloudEventListener();
+          }, 3000);
+        }
       }
     }
 
-    // FETCH LATEST CLOUD STATE (WITH AUTOMATIC SERVER FALLBACK)
+    // FETCH LATEST CLOUD STATE (WITH CACHE BUSTER & SERVER FALLBACK)
+    let isFetchingCloud = false;
     async function fetchLatestCloudData(manual = false) {
+      if (isFetchingCloud) return;
+      isFetchingCloud = true;
       if (manual) updateCloudStatusUI('syncing');
 
       let fetchedText = null;
@@ -2116,7 +2138,10 @@
       // Try primary server, fallback to secondary
       for (const srv of CLOUD_SYNC_SERVERS) {
         try {
-          const res = await fetch(`${srv}/${CLOUD_SYNC_CHANNEL}/json?poll=1`);
+          const res = await fetch(`${srv}/${CLOUD_SYNC_CHANNEL}/json?poll=1&_t=${Date.now()}`, {
+            cache: 'no-store',
+            headers: { 'Cache-Control': 'no-cache, no-store' }
+          });
           if (res.ok) {
             const text = await res.text();
             if (text && text.trim().length > 0) {
@@ -2126,6 +2151,8 @@
           }
         } catch(e) {}
       }
+
+      isFetchingCloud = false;
 
       if (!fetchedText) {
         updateCloudStatusUI('connected');
@@ -2141,8 +2168,8 @@
         try {
           const msg = JSON.parse(lines[i]);
           if (msg && msg.message) {
-            const payload = JSON.parse(msg.message);
-            if (payload.products && Array.isArray(payload.products)) {
+            const payload = typeof msg.message === 'object' ? msg.message : JSON.parse(msg.message);
+            if (payload && payload.products && Array.isArray(payload.products) && payload.products.length > 0) {
               if (applyCloudSyncPayload(payload, false, manual, msg.id || '')) {
                 applied = true;
               }
@@ -2164,13 +2191,13 @@
 
       if (status === 'connected') {
         if (badge) badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block"></span><span class="text-[10px] font-bold text-emerald-300">Đám Mây Realtime</span>`;
-        if (headerIndicator) headerIndicator.className = "flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-1.5 rounded-xl border border-emerald-500/20";
+        if (headerIndicator) headerIndicator.className = "flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-1.5 rounded-xl border border-emerald-500/20 cursor-pointer active:scale-95 transition shadow-xs";
       } else if (status === 'syncing') {
         if (badge) badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-blue-400 animate-ping inline-block"></span><span class="text-[10px] font-bold text-blue-300">Đang đồng bộ...</span>`;
-        if (headerIndicator) headerIndicator.className = "flex items-center gap-1.5 text-[11px] text-blue-600 dark:text-blue-400 font-bold bg-blue-500/10 px-2.5 py-1.5 rounded-xl border border-blue-500/20";
+        if (headerIndicator) headerIndicator.className = "flex items-center gap-1.5 text-[11px] text-blue-600 dark:text-blue-400 font-bold bg-blue-500/10 px-2.5 py-1.5 rounded-xl border border-blue-500/20 cursor-pointer active:scale-95 transition shadow-xs";
       } else {
-        if (badge) badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400 inline-block"></span><span class="text-[10px] font-bold text-slate-300">Lưu Máy Này (Offline)</span>`;
-        if (headerIndicator) headerIndicator.className = "flex items-center gap-1.5 text-[11px] text-slate-500 font-medium bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700";
+        if (badge) badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span><span class="text-[10px] font-bold text-emerald-300">Đám Mây Sẵn Sàng</span>`;
+        if (headerIndicator) headerIndicator.className = "flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-1.5 rounded-xl border border-emerald-500/20 cursor-pointer active:scale-95 transition shadow-xs";
       }
     }
   </script>
